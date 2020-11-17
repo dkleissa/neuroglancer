@@ -141,6 +141,7 @@ export interface SegmentationGroupState extends VisibleSegmentsState {
 export interface SegmentationDisplayState {
   segmentSelectionState: SegmentSelectionState;
   saturation: TrackableAlphaValue;
+  baseSegmentColoring: WatchableValueInterface<boolean>;
   segmentationGroupState: WatchableValueInterface<SegmentationGroupState>;
 
   selectSegment: (id: Uint64, pin: boolean|'toggle') => void;
@@ -413,7 +414,18 @@ export class SegmentWidgetFactory {
         getCssColor(getBaseObjectColor(this.displayState, mapped));
     const {unmappedIdIndex} = template;
     if (unmappedIdIndex !== -1) {
-      (children[unmappedIdIndex] as HTMLElement).style.backgroundColor = 'white';
+      const baseSegmentColoring = displayState!.baseSegmentColoring.value;
+      if (baseSegmentColoring) {
+        const unmappedIdString = container.dataset.unmappedId;
+        if (unmappedIdString !== undefined) {
+          const unmappedId = tempStatedColor;
+          unmappedId.parseString(unmappedIdString);
+          (children[unmappedIdIndex] as HTMLElement).style.backgroundColor =
+              getCssColor(getBaseObjectColor(this.displayState, unmappedId));
+        }
+      } else {
+        (children[unmappedIdIndex] as HTMLElement).style.backgroundColor = 'white';
+      }
     }
   }
 }
@@ -446,6 +458,7 @@ export function registerCallbackWhenSegmentationDisplayStateChanged(
   context.registerDisposer(displayState.saturation.changed.add(callback));
   context.registerDisposer(groupState.segmentEquivalences.changed.add(callback));
   context.registerDisposer(displayState.segmentSelectionState.changed.add(callback));
+  context.registerDisposer(displayState.baseSegmentColoring.changed.add(callback));
   onVisibleSegmentsStateChanged(context, groupState, callback);
 }
 
@@ -566,9 +579,12 @@ export function forEachVisibleSegmentToDraw(
         objectId: Uint64, color: vec4|undefined, pickIndex: number|undefined,
         rootObjectId: Uint64) => void) {
   const alpha = Math.min(1, displayState.objectAlpha.value);
+  const baseSegmentColoring = displayState.baseSegmentColoring.value;
   forEachVisibleSegment(displayState.segmentationGroupState.value, (objectId, rootObjectId) => {
     let pickIndex = pickIDs?.registerUint64(renderLayer, objectId);
-    let color = emitColor ? getObjectColor(displayState, rootObjectId, alpha) : undefined;
+    let color = emitColor ?
+        getObjectColor(displayState, baseSegmentColoring ? objectId : rootObjectId, alpha) :
+        undefined;
     callback(objectId, color, pickIndex, rootObjectId);
   });
 }

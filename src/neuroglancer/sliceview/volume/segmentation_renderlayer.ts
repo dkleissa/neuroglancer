@@ -54,6 +54,7 @@ export interface SliceViewSegmentationDisplayState extends SegmentationDisplaySt
 
 interface ShaderParameters {
   hasEquivalences: boolean;
+  baseSegmentColoring: boolean;
   hasSegmentStatedColors: boolean;
   hideSegmentZero: boolean;
 }
@@ -84,6 +85,7 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
             hasSegmentStatedColors: refCounted.registerDisposer(makeCachedDerivedWatchableValue(
                 x => x.size !== 0, [displayState.segmentationGroupState.value.segmentStatedColors])),
             hideSegmentZero: displayState.hideSegmentZero,
+            baseSegmentColoring: displayState.baseSegmentColoring,
           })),
       transform: displayState.transform,
       renderScaleHistogram: displayState.renderScaleHistogram,
@@ -105,16 +107,18 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
 
   defineShader(builder: ShaderBuilder, parameters: ShaderParameters) {
     this.hashTableManager.defineShader(builder);
-    builder.addFragmentCode(`
+    let getUint64Code = `
 uint64_t getUint64DataValue() {
-  return toUint64(getDataValue());
+  uint64_t x = toUint64(getDataValue());
+`;
+    getUint64Code += `return x;
 }
-`);
+`;
+    builder.addFragmentCode(getUint64Code);
     if (parameters.hasEquivalences) {
       this.equivalencesShaderManager.defineShader(builder);
       builder.addFragmentCode(`
-uint64_t getMappedObjectId() {
-  uint64_t value = getUint64DataValue();
+uint64_t getMappedObjectId(uint64_t value) {
   uint64_t mappedValue;
   if (${this.equivalencesShaderManager.getFunctionName}(value, mappedValue)) {
     return mappedValue;
@@ -124,8 +128,8 @@ uint64_t getMappedObjectId() {
 `);
     } else {
       builder.addFragmentCode(`
-uint64_t getMappedObjectId() {
-  return getUint64DataValue();
+uint64_t getMappedObjectId(uint64_t value) {
+  return value;
 }
 `);
     }
@@ -136,7 +140,9 @@ uint64_t getMappedObjectId() {
     builder.addUniform('highp float', 'uNotSelectedAlpha');
     builder.addUniform('highp float', 'uSaturation');
     let fragmentMain = `
-  uint64_t value = getMappedObjectId();
+  uint64_t baseValue = getUint64DataValue();
+  uint64_t value = getMappedObjectId(baseValue);
+  uint64_t valueForColor = ${parameters.baseSegmentColoring?'baseValue':'value'};
 
   float alpha = uSelectedAlpha;
   float saturation = uSaturation;
@@ -167,13 +173,13 @@ uint64_t getMappedObjectId() {
       this.segmentStatedColorShaderManager.defineShader(builder);
       fragmentMain += `
   vec3 rgb;
-  if (!${this.segmentStatedColorShaderManager.getFunctionName}(value, rgb)) {
-    rgb = segmentColorHash(value);
+  if (!${this.segmentStatedColorShaderManager.getFunctionName}(valueForColor, rgb)) {
+    rgb = segmentColorHash(valueForColor);
   }
 `;
     } else {
       fragmentMain += `
-  vec3 rgb = segmentColorHash(value);
+  vec3 rgb = segmentColorHash(valueForColor);
 `;
     }
 
@@ -185,7 +191,8 @@ uint64_t getMappedObjectId() {
 
   initializeShader(_sliceView: SliceView, shader: ShaderProgram, parameters: ShaderParameters) {
     const {gl} = this;
-    const {segmentSelectionState} = this.displayState;
+    const {displayState} = this;
+    const {segmentSelectionState} = displayState;
     const {visibleSegments, segmentColorHash} = this.segmentationGroupState;
     const ignoreNullSegmentSet = this.displayState.ignoreNullVisibleSet.value;
     let selectedSegmentLow = 0, selectedSegmentHigh = 0;
@@ -194,9 +201,9 @@ uint64_t getMappedObjectId() {
       selectedSegmentLow = seg.low;
       selectedSegmentHigh = seg.high;
     }
-    gl.uniform1f(shader.uniform('uSelectedAlpha'), this.displayState.selectedAlpha.value);
-    gl.uniform1f(shader.uniform('uSaturation'), this.displayState.saturation.value);
-    gl.uniform1f(shader.uniform('uNotSelectedAlpha'), this.displayState.notSelectedAlpha.value);
+    gl.uniform1f(shader.uniform('uSelectedAlpha'), displayState.selectedAlpha.value);
+    gl.uniform1f(shader.uniform('uSaturation'), displayState.saturation.value);
+    gl.uniform1f(shader.uniform('uNotSelectedAlpha'), displayState.notSelectedAlpha.value);
     gl.uniform2ui(shader.uniform('uSelectedSegment'), selectedSegmentLow, selectedSegmentHigh);
     gl.uniform1ui(
         shader.uniform('uShowAllSegments'),
