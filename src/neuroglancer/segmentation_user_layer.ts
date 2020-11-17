@@ -30,6 +30,7 @@ import {SegmentColorHash} from 'neuroglancer/segment_color';
 import {augmentSegmentId, bindSegmentListWidth, makeSegmentWidget, maybeAugmentSegmentId, registerCallbackWhenSegmentationDisplayStateChanged, SegmentationDisplayState, SegmentationGroupState, SegmentSelectionState, SegmentWidgetFactory, Uint64MapEntry} from 'neuroglancer/segmentation_display_state/frontend';
 import {compareSegmentLabels, normalizeSegmentLabel, SegmentLabelMap, SegmentPropertyMap} from 'neuroglancer/segmentation_display_state/property_map';
 import {SharedDisjointUint64Sets} from 'neuroglancer/shared_disjoint_sets';
+import {SharedWatchableValue} from 'neuroglancer/shared_watchable_value';
 import {PerspectiveViewSkeletonLayer, SkeletonLayer, SkeletonRenderingOptions, SliceViewPanelSkeletonLayer, ViewSpecificSkeletonRenderingOptions} from 'neuroglancer/skeleton/frontend';
 import {DataType, VolumeType} from 'neuroglancer/sliceview/volume/base';
 import {MultiscaleVolumeChunkSource} from 'neuroglancer/sliceview/volume/frontend';
@@ -178,6 +179,15 @@ export class SegmentationUserLayerGroupState extends RefCounted implements Segme
   maxIdLength = new WatchableValue(1);
   hideSegmentZero = new TrackableBoolean(true, true);
   segmentQuery = new TrackableValue<string>('', verifyString);
+
+  temporaryVisibleSegments =
+      this.layer.registerDisposer(Uint64Set.makeWithCounterpart(this.layer.manager.rpc));
+  temporarySegmentEquivalences = this.layer.registerDisposer(
+      SharedDisjointUint64Sets.makeWithCounterpart(this.layer.manager.rpc));
+  useTemporaryVisibleSegments =
+      this.layer.registerDisposer(SharedWatchableValue.make(this.layer.manager.rpc, false));
+  useTemporarySegmentEquivalences =
+      this.layer.registerDisposer(SharedWatchableValue.make(this.layer.manager.rpc, false));
 }
 
 class LinkedSegmentationGroupState extends RefCounted implements

@@ -17,6 +17,7 @@
 import {HashMapUint64} from 'neuroglancer/gpu_hash/hash_table';
 import {GPUHashTable, HashMapShaderManager, HashSetShaderManager} from 'neuroglancer/gpu_hash/shader';
 import {SegmentColorShaderManager, SegmentStatedColorShaderManager} from 'neuroglancer/segment_color';
+import {getVisibleSegments} from 'neuroglancer/segmentation_display_state/base';
 import {registerRedrawWhenSegmentationDisplayStateChanged, SegmentationDisplayState} from 'neuroglancer/segmentation_display_state/frontend';
 import {SliceViewSourceOptions} from 'neuroglancer/sliceview/base';
 import {SliceView, SliceViewSingleResolutionSource} from 'neuroglancer/sliceview/frontend';
@@ -69,10 +70,16 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
 
   private hashTableManager = new HashSetShaderManager('visibleSegments');
   private gpuHashTable = GPUHashTable.get(this.gl, this.segmentationGroupState.visibleSegments.hashTable);
+  private gpuTemporaryHashTable =
+      GPUHashTable.get(this.gl, this.segmentationGroupState.temporaryVisibleSegments.hashTable);
   private equivalencesShaderManager = new HashMapShaderManager('equivalences');
   private equivalencesHashMap =
       new EquivalencesHashMap(this.segmentationGroupState.segmentEquivalences.disjointSets);
+  private temporaryEquivalencesHashMap =
+      new EquivalencesHashMap(this.segmentationGroupState.temporarySegmentEquivalences.disjointSets);
   private gpuEquivalencesHashTable = GPUHashTable.get(this.gl, this.equivalencesHashMap.hashMap);
+  private gpuTemporaryEquivalencesHashTable =
+      GPUHashTable.get(this.gl, this.temporaryEquivalencesHashMap.hashMap);
 
   constructor(
       multiscaleSource: MultiscaleVolumeChunkSource,
@@ -191,9 +198,10 @@ uint64_t getMappedObjectId(uint64_t value) {
 
   initializeShader(_sliceView: SliceView, shader: ShaderProgram, parameters: ShaderParameters) {
     const {gl} = this;
-    const {displayState} = this;
+    const {displayState, segmentationGroupState} = this;
     const {segmentSelectionState} = displayState;
-    const {visibleSegments, segmentColorHash} = this.segmentationGroupState;
+    const {segmentColorHash} = segmentationGroupState;
+    const visibleSegments = getVisibleSegments(segmentationGroupState);
     const ignoreNullSegmentSet = this.displayState.ignoreNullVisibleSet.value;
     let selectedSegmentLow = 0, selectedSegmentHigh = 0;
     if (segmentSelectionState.hasSelectedSegment) {
@@ -208,10 +216,16 @@ uint64_t getMappedObjectId(uint64_t value) {
     gl.uniform1ui(
         shader.uniform('uShowAllSegments'),
         visibleSegments.hashTable.size || !ignoreNullSegmentSet ? 0 : 1);
-    this.hashTableManager.enable(gl, shader, this.gpuHashTable);
+    this.hashTableManager.enable(
+        gl, shader,
+        segmentationGroupState.useTemporaryVisibleSegments.value ? this.gpuTemporaryHashTable :
+                                                                   this.gpuHashTable);
     if (parameters.hasEquivalences) {
-      this.equivalencesHashMap.update();
-      this.equivalencesShaderManager.enable(gl, shader, this.gpuEquivalencesHashTable);
+      const useTemp = segmentationGroupState.useTemporarySegmentEquivalences.value;
+      (useTemp ? this.temporaryEquivalencesHashMap : this.equivalencesHashMap).update();
+      this.equivalencesShaderManager.enable(
+          gl, shader,
+          useTemp ? this.gpuTemporaryEquivalencesHashTable : this.gpuEquivalencesHashTable);
     }
 
     this.segmentColorShaderManager.enable(gl, shader, segmentColorHash);
