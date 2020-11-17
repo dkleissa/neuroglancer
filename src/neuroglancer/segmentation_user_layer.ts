@@ -37,7 +37,7 @@ import {MultiscaleVolumeChunkSource} from 'neuroglancer/sliceview/volume/fronten
 import {SegmentationRenderLayer} from 'neuroglancer/sliceview/volume/segmentation_renderlayer';
 import {trackableAlphaValue} from 'neuroglancer/trackable_alpha';
 import {TrackableBoolean, TrackableBooleanCheckbox} from 'neuroglancer/trackable_boolean';
-import {IndirectTrackableValue, IndirectWatchableValue, makeCachedLazyDerivedWatchableValue, observeWatchable, registerNestedSync, TrackableValue, TrackableValueInterface, WatchableValue, WatchableValueInterface} from 'neuroglancer/trackable_value';
+import {constantWatchableValue, IndirectTrackableValue, IndirectWatchableValue, makeCachedLazyDerivedWatchableValue, observeWatchable, registerNestedSync, TrackableValue, TrackableValueInterface, WatchableValue, WatchableValueInterface} from 'neuroglancer/trackable_value';
 import {UserLayerWithAnnotationsMixin} from 'neuroglancer/ui/annotations';
 import {getDefaultSelectBindings} from 'neuroglancer/ui/default_input_event_bindings';
 import {Uint64Map} from 'neuroglancer/uint64_map';
@@ -175,15 +175,16 @@ export class SegmentationUserLayerGroupState extends RefCounted implements Segme
   segmentLabelMap = new WatchableValue<SegmentLabelMap|undefined>(undefined);
   segmentPropertyMaps = new WatchableValue<SegmentPropertyMap[]>([]);
   segmentEquivalences =
-      this.registerDisposer(SharedDisjointUint64Sets.makeWithCounterpart(this.layer.manager.rpc));
+    this.registerDisposer(SharedDisjointUint64Sets.makeWithCounterpart(this.layer.manager.rpc, constantWatchableValue(false)));
   maxIdLength = new WatchableValue(1);
   hideSegmentZero = new TrackableBoolean(true, true);
   segmentQuery = new TrackableValue<string>('', verifyString);
 
   temporaryVisibleSegments =
       this.layer.registerDisposer(Uint64Set.makeWithCounterpart(this.layer.manager.rpc));
-  temporarySegmentEquivalences = this.layer.registerDisposer(
-      SharedDisjointUint64Sets.makeWithCounterpart(this.layer.manager.rpc));
+  temporarySegmentEquivalences =
+      this.layer.registerDisposer(SharedDisjointUint64Sets.makeWithCounterpart(
+          this.layer.manager.rpc, this.segmentEquivalences.disjointSets.highBitRepresentative));
   useTemporaryVisibleSegments =
       this.layer.registerDisposer(SharedWatchableValue.make(this.layer.manager.rpc, false));
   useTemporarySegmentEquivalences =
