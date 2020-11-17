@@ -164,3 +164,12 @@
 .neuroglancer-segment-list-entry:hover .neuroglancer-segment-list-entry-filter {
   visibility: visible;
 }
+
+.neuroglancer-segmentation-toolbox {
+  display: inline-block;
+}
+
+.neuroglancer-merge-segments-status {
+  display: flex;
+  flex-direction: row;
+}

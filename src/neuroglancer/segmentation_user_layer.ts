@@ -27,19 +27,22 @@ import {MeshLayer, MeshSource, MultiscaleMeshLayer, MultiscaleMeshSource} from '
 import {Overlay} from 'neuroglancer/overlay';
 import {RenderScaleHistogram, trackableRenderScaleTarget} from 'neuroglancer/render_scale_statistics';
 import {SegmentColorHash} from 'neuroglancer/segment_color';
-import {augmentSegmentId, bindSegmentListWidth, makeSegmentWidget, maybeAugmentSegmentId, registerCallbackWhenSegmentationDisplayStateChanged, SegmentationDisplayState, SegmentationGroupState, SegmentSelectionState, SegmentWidgetFactory, Uint64MapEntry} from 'neuroglancer/segmentation_display_state/frontend';
+import {augmentSegmentId, bindSegmentListWidth, makeSegmentWidget, maybeAugmentSegmentId, registerCallbackWhenSegmentationDisplayStateChanged, resetTemporaryVisibleSegmentsState, SegmentationDisplayState, SegmentationGroupState, SegmentSelectionState, SegmentWidgetFactory, Uint64MapEntry} from 'neuroglancer/segmentation_display_state/frontend';
 import {compareSegmentLabels, normalizeSegmentLabel, SegmentLabelMap, SegmentPropertyMap} from 'neuroglancer/segmentation_display_state/property_map';
+import {isBaseSegmentId, SegmentationGraphSource, SegmentationGraphSourceConnection, UNKNOWN_NEW_SEGMENT_ID} from 'neuroglancer/segmentation_graph/source';
 import {SharedDisjointUint64Sets} from 'neuroglancer/shared_disjoint_sets';
 import {SharedWatchableValue} from 'neuroglancer/shared_watchable_value';
 import {PerspectiveViewSkeletonLayer, SkeletonLayer, SkeletonRenderingOptions, SliceViewPanelSkeletonLayer, ViewSpecificSkeletonRenderingOptions} from 'neuroglancer/skeleton/frontend';
 import {DataType, VolumeType} from 'neuroglancer/sliceview/volume/base';
 import {MultiscaleVolumeChunkSource} from 'neuroglancer/sliceview/volume/frontend';
 import {SegmentationRenderLayer} from 'neuroglancer/sliceview/volume/segmentation_renderlayer';
+import {StatusMessage} from 'neuroglancer/status';
 import {trackableAlphaValue} from 'neuroglancer/trackable_alpha';
 import {TrackableBoolean, TrackableBooleanCheckbox} from 'neuroglancer/trackable_boolean';
-import {constantWatchableValue, IndirectTrackableValue, IndirectWatchableValue, makeCachedLazyDerivedWatchableValue, observeWatchable, registerNestedSync, TrackableValue, TrackableValueInterface, WatchableValue, WatchableValueInterface} from 'neuroglancer/trackable_value';
+import {IndirectTrackableValue, IndirectWatchableValue, makeCachedDerivedWatchableValue, makeCachedLazyDerivedWatchableValue, observeWatchable, registerNestedSync, TrackableValue, TrackableValueInterface, WatchableValue, WatchableValueInterface} from 'neuroglancer/trackable_value';
 import {UserLayerWithAnnotationsMixin} from 'neuroglancer/ui/annotations';
 import {getDefaultSelectBindings} from 'neuroglancer/ui/default_input_event_bindings';
+import {makeToolButton, registerTool, Tool} from 'neuroglancer/ui/tool';
 import {Uint64Map} from 'neuroglancer/uint64_map';
 import {Uint64Set} from 'neuroglancer/uint64_set';
 import {animationFrameDebounce} from 'neuroglancer/util/animation_frame_debounce';
@@ -47,6 +50,7 @@ import {arraysEqual, ArraySpliceOp, binarySearchLowerBound, getMergeSplices} fro
 import {setClipboard} from 'neuroglancer/util/clipboard';
 import {packColor, parseRGBColorSpecification, serializeColor, unpackRGB} from 'neuroglancer/util/color';
 import {Borrowed, Owned, RefCounted} from 'neuroglancer/util/disposable';
+import {removeChildren} from 'neuroglancer/util/dom';
 import {parseArray, verifyFiniteNonNegativeFloat, verifyObjectAsMap, verifyObjectProperty, verifyOptionalObjectProperty, verifyString} from 'neuroglancer/util/json';
 import {EventActionMap, KeyboardEventBinder, registerActionListener} from 'neuroglancer/util/keyboard_bindings';
 import {MouseEventBinder} from 'neuroglancer/util/mouse_bindings';
@@ -62,6 +66,7 @@ import {LinkedLayerGroupWidget} from 'neuroglancer/widget/linked_layer';
 import {makeMaximizeButton} from 'neuroglancer/widget/maximize_button';
 import {RangeWidget} from 'neuroglancer/widget/range';
 import {RenderScaleWidget} from 'neuroglancer/widget/render_scale_widget';
+import {makeLinkSegmentsButton} from 'neuroglancer/widget/segment_buttons';
 import {ShaderCodeWidget} from 'neuroglancer/widget/shader_code_widget';
 import {ShaderControls} from 'neuroglancer/widget/shader_controls';
 import {Tab} from 'neuroglancer/widget/tab_view';
@@ -88,6 +93,7 @@ const SKELETON_SHADER_JSON_KEY = 'skeletonShader';
 const SEGMENT_QUERY_JSON_KEY = 'segmentQuery';
 const MESH_SILHOUETTE_RENDERING_JSON_KEY = 'meshSilhouetteRendering';
 const LINKED_SEGMENTATION_GROUP_JSON_KEY = 'linkedSegmentationGroup';
+const ANCHOR_SEGMENT_JSON_KEY = 'anchorSegment';
 
 const maxSilhouettePower = 10;
 
@@ -102,7 +108,6 @@ export class SegmentationUserLayerGroupState extends RefCounted implements Segme
     this.segmentStatedColors.changed.add(specificationChanged.dispatch);
     this.visibleSegments.changed.add(specificationChanged.dispatch);
     this.segmentLabelMap.changed.add(specificationChanged.dispatch);
-    this.segmentEquivalences.changed.add(specificationChanged.dispatch);
     this.hideSegmentZero.changed.add(specificationChanged.dispatch);
     this.segmentQuery.changed.add(specificationChanged.dispatch);
   }
@@ -115,6 +120,10 @@ export class SegmentationUserLayerGroupState extends RefCounted implements Segme
         specification, COLOR_SEED_JSON_KEY, value => this.segmentColorHash.restoreState(value));
     verifyOptionalObjectProperty(specification, EQUIVALENCES_JSON_KEY, value => {
       this.segmentEquivalences.restoreState(value);
+      if (this.segmentEquivalences.size > 0) {
+        this.localSegmentEquivalences = true;
+        this.segmentEquivalences.changed.add(this.specificationChanged.dispatch);
+      }
     });
 
     verifyOptionalObjectProperty(specification, SEGMENTS_JSON_KEY, segmentsValue => {
@@ -153,7 +162,7 @@ export class SegmentationUserLayerGroupState extends RefCounted implements Segme
       x[SEGMENTS_JSON_KEY] = visibleSegments.toJSON();
     }
     let {segmentEquivalences} = this;
-    if (segmentEquivalences.size > 0) {
+    if (this.localSegmentEquivalences && segmentEquivalences.size > 0) {
       x[EQUIVALENCES_JSON_KEY] = segmentEquivalences.toJSON();
     }
     x[SEGMENT_QUERY_JSON_KEY] = this.segmentQuery.toJSON();
@@ -174,8 +183,12 @@ export class SegmentationUserLayerGroupState extends RefCounted implements Segme
   visibleSegments = this.registerDisposer(Uint64Set.makeWithCounterpart(this.layer.manager.rpc));
   segmentLabelMap = new WatchableValue<SegmentLabelMap|undefined>(undefined);
   segmentPropertyMaps = new WatchableValue<SegmentPropertyMap[]>([]);
-  segmentEquivalences =
-    this.registerDisposer(SharedDisjointUint64Sets.makeWithCounterpart(this.layer.manager.rpc, constantWatchableValue(false)));
+  graph = new WatchableValue<SegmentationGraphSource|undefined>(undefined);
+  segmentEquivalences = this.registerDisposer(SharedDisjointUint64Sets.makeWithCounterpart(
+      this.layer.manager.rpc,
+      this.layer.registerDisposer(
+          makeCachedDerivedWatchableValue(x => x !== undefined, [this.graph]))));
+  localSegmentEquivalences: boolean = false;
   maxIdLength = new WatchableValue(1);
   hideSegmentZero = new TrackableBoolean(true, true);
   segmentQuery = new TrackableValue<string>('', verifyString);
@@ -286,6 +299,8 @@ export class SegmentationUserLayer extends Base {
   sliceViewRenderScaleHistogram = new RenderScaleHistogram();
   sliceViewRenderScaleTarget = trackableRenderScaleTarget(1);
 
+  graphConnection: SegmentationGraphSourceConnection|undefined;
+
   bindSegmentListWidth(element: HTMLElement) {
     return bindSegmentListWidth(this.displayState, element);
   }
@@ -317,6 +332,9 @@ export class SegmentationUserLayer extends Base {
 
   displayState = new SegmentationUserLayerDisplayState(this);
 
+  anchorSegment = new TrackableValue<Uint64|undefined>(
+      undefined, x => x === undefined ? undefined : Uint64.parseString(x));
+
   constructor(managedLayer: Borrowed<ManagedUserLayer>) {
     super(managedLayer);
     this.registerDisposer(registerNestedSync((context, group) => {
@@ -333,6 +351,7 @@ export class SegmentationUserLayer extends Base {
     this.displayState.skeletonRenderingOptions.changed.add(this.specificationChanged.dispatch);
     this.displayState.renderScaleTarget.changed.add(this.specificationChanged.dispatch);
     this.displayState.silhouetteRendering.changed.add(this.specificationChanged.dispatch);
+    this.anchorSegment.changed.add(this.specificationChanged.dispatch);
     this.sliceViewRenderScaleTarget.changed.add(this.specificationChanged.dispatch);
     this.displayState.linkedSegmentationGroup.changed.add(
         () => this.updateDataSubsourceActivations());
@@ -367,9 +386,11 @@ export class SegmentationUserLayer extends Base {
     let updatedSegmentLabelMap: SegmentLabelMap|undefined;
     const updatedSegmentPropertyMaps: SegmentPropertyMap[] = [];
     const isGroupRoot = this.displayState.linkedSegmentationGroup.root.value === this;
+    let updatedGraph: SegmentationGraphSource|undefined;
     for (const loadedSubsource of subsources) {
       if (this.addStaticAnnotations(loadedSubsource)) continue;
-      const {volume, mesh, segmentPropertyMap} = loadedSubsource.subsourceEntry.subsource;
+      const {volume, mesh, segmentPropertyMap, segmentationGraph} =
+          loadedSubsource.subsourceEntry.subsource;
       if (volume instanceof MultiscaleVolumeChunkSource) {
         switch (volume.dataType) {
           case DataType.FLOAT32:
@@ -419,10 +440,30 @@ export class SegmentationUserLayer extends Base {
           }
           updatedSegmentPropertyMaps.push(segmentPropertyMap);
         }
+      } else if (segmentationGraph !== undefined) {
+        if (!isGroupRoot) {
+          loadedSubsource.deactivate(`Not supported on non-root linked segmentation layers`);
+        } else {
+          if (this.displayState.segmentationGroupState.value.localSegmentEquivalences) {
+            loadedSubsource.deactivate('Not compatible with local equivalences');
+          } else if (updatedGraph !== undefined) {
+            loadedSubsource.deactivate('Only one segmentation graph is supported');
+          } else {
+            updatedGraph = segmentationGraph;
+            loadedSubsource.activate(refCounted => {
+              this.graphConnection = refCounted.registerDisposer(
+                  segmentationGraph.connect(this.displayState.segmentationGroupState.value));
+              refCounted.registerDisposer(() => {
+                this.graphConnection = undefined;
+              });
+            });
+          }
+        }
       } else {
         loadedSubsource.deactivate('Not compatible with segmentation layer');
       }
     }
+    this.displayState.originalSegmentationGroupState.graph.value = updatedGraph;
     this.displayState.originalSegmentationGroupState.segmentLabelMap.value = updatedSegmentLabelMap;
     if (!arraysEqual(
             updatedSegmentPropertyMaps,
@@ -481,6 +522,7 @@ export class SegmentationUserLayer extends Base {
       skeletonRenderingOptions.shader.restoreState(skeletonShader);
     }
     this.displayState.renderScaleTarget.restoreState(specification[MESH_RENDER_SCALE_JSON_KEY]);
+    this.anchorSegment.restoreState(specification[ANCHOR_SEGMENT_JSON_KEY]);
     this.sliceViewRenderScaleTarget.restoreState(
         specification[CROSS_SECTION_RENDER_SCALE_JSON_KEY]);
     verifyObjectProperty(
@@ -498,6 +540,7 @@ export class SegmentationUserLayer extends Base {
     x[BASE_SEGMENT_COLORING_JSON_KEY] = this.displayState.baseSegmentColoring.toJSON();
     x[IGNORE_NULL_VISIBLE_SET_JSON_KEY] = this.displayState.ignoreNullVisibleSet.toJSON();
     x[MESH_SILHOUETTE_RENDERING_JSON_KEY] = this.displayState.silhouetteRendering.toJSON();
+    x[ANCHOR_SEGMENT_JSON_KEY] = this.anchorSegment.toJSON();
     x[SKELETON_RENDERING_JSON_KEY] = this.displayState.skeletonRenderingOptions.toJSON();
     x[MESH_RENDER_SCALE_JSON_KEY] = this.displayState.renderScaleTarget.toJSON();
     x[CROSS_SECTION_RENDER_SCALE_JSON_KEY] = this.sliceViewRenderScaleTarget.toJSON();
@@ -583,7 +626,6 @@ export class SegmentationUserLayer extends Base {
     return json;
   }
 
-
   private displaySegmentationSelection(
       state: this['selectionState'], parent: HTMLElement, context: DependentViewContext): boolean {
     const {value} = state;
@@ -661,7 +703,7 @@ class DisplayOptionsTab extends Tab {
     // Linked segmentation control
     {
       const widget = this.registerDisposer(
-        new LinkedLayerGroupWidget(layer.displayState.linkedSegmentationGroup));
+          new LinkedLayerGroupWidget(layer.displayState.linkedSegmentationGroup));
       widget.label.textContent = 'Linked to: ';
       element.appendChild(widget.element);
     }
@@ -672,8 +714,8 @@ class DisplayOptionsTab extends Tab {
       label.style.display = 'flex';
       label.style.flexDirection = 'row';
       label.style.justifyContent = 'space-between';
-      const widget = this.registerDisposer(
-          new TextInputWidget(layer.displayState.segmentColorHash));
+      const widget =
+          this.registerDisposer(new TextInputWidget(layer.displayState.segmentColorHash));
       label.appendChild(widget.element);
       const randomize = makeIcon({
         svg: svg_rotate,
@@ -1049,6 +1091,395 @@ class SegmentListSource extends RefCounted implements VirtualListSource {
   }
 }
 
+const ANNOTATE_MERGE_SEGMENTS_TOOL_ID = 'mergeSegments';
+const ANNOTATE_SPLIT_SEGMENTS_TOOL_ID = 'splitSegments';
+
+const MERGE_SEGMENTS_INPUT_EVENT_MAP = EventActionMap.fromObject({
+  'at:shift+mousedown0': {action: 'annotate-merge-segments'},
+  'at:shift+mousedown2': {action: 'annotate-set-anchor'},
+});
+
+class MergeSegmentsTool extends Tool {
+  layer: SegmentationUserLayer;
+  lastAnchorBaseSegment = new WatchableValue<Uint64|undefined>(undefined);
+
+  constructor(layer: SegmentationUserLayer) {
+    super(layer);
+
+    // Track the most recent base segment id within anchorSegment.
+    const maybeUpdateLastAnchorBaseSegment = () => {
+      const anchorSegment = layer.anchorSegment.value;
+      if (anchorSegment === undefined) return;
+      const {segmentSelectionState} = layer.displayState;
+      if (!segmentSelectionState.hasSelectedSegment) return;
+      const {segmentEquivalences} = layer.displayState.segmentationGroupState.value;
+      const mappedAnchorSegment = segmentEquivalences.get(anchorSegment);
+      if (!Uint64.equal(segmentSelectionState.selectedSegment, mappedAnchorSegment)) return;
+      const base = segmentSelectionState.baseSelectedSegment;
+      if (!isBaseSegmentId(base)) return;
+      this.lastAnchorBaseSegment.value = base.clone();
+    };
+    this.registerDisposer(
+        layer.displayState.segmentSelectionState.changed.add(maybeUpdateLastAnchorBaseSegment));
+    this.registerDisposer(layer.anchorSegment.changed.add(maybeUpdateLastAnchorBaseSegment));
+  }
+
+  get inputEventMap() {
+    return MERGE_SEGMENTS_INPUT_EVENT_MAP;
+  }
+
+  toJSON() {
+    return ANNOTATE_MERGE_SEGMENTS_TOOL_ID;
+  }
+
+  private getAnchorSegment(): {anchorSegment: Uint64|undefined, error: string|undefined} {
+    const {displayState} = this.layer;
+    let anchorSegment = this.layer.anchorSegment.value;
+    let baseAnchorSegment = this.lastAnchorBaseSegment.value;
+    if (anchorSegment === undefined) {
+      return {anchorSegment: undefined, error: 'Select anchor segment for merge'};
+    }
+    const anchorGraphSegment =
+        displayState.segmentationGroupState.value.segmentEquivalences.get(anchorSegment);
+    if (!displayState.segmentationGroupState.value.visibleSegments.has(anchorGraphSegment)) {
+      return {anchorSegment, error: 'Anchor segment must be in visible set'};
+    }
+    if (baseAnchorSegment === undefined ||
+        !Uint64.equal(
+            displayState.segmentationGroupState.value.segmentEquivalences.get(baseAnchorSegment),
+            anchorGraphSegment)) {
+      return {
+        anchorSegment,
+        error: 'Hover over base segment within anchor segment that is closest to merge location'
+      };
+    }
+    return {anchorSegment: baseAnchorSegment, error: undefined};
+  }
+
+  private getMergeRequest(): {
+    anchorSegment: Uint64|undefined,
+    otherSegment: Uint64|undefined,
+    anchorSegmentValid: boolean,
+    error: string|undefined
+  } {
+    let {anchorSegment, error} = this.getAnchorSegment();
+    if (anchorSegment === undefined || error !== undefined) {
+      return {anchorSegment, error, otherSegment: undefined, anchorSegmentValid: false};
+    }
+    const {displayState} = this.layer;
+    const otherSegment = displayState.segmentSelectionState.baseValue;
+    if (otherSegment === undefined ||
+        Uint64.equal(
+            displayState.segmentSelectionState.selectedSegment,
+            displayState.segmentationGroupState.value.segmentEquivalences.get(anchorSegment))) {
+      return {
+        anchorSegment,
+        otherSegment: undefined,
+        error: 'Hover over segment to merge',
+        anchorSegmentValid: true
+      };
+    }
+    return {anchorSegment, otherSegment, error: undefined, anchorSegmentValid: true};
+  }
+
+  activate() {
+    const activateContext = this.activateContext!;
+    const message = activateContext.registerDisposer(new StatusMessage(false));
+    const updateTempView = () => {
+      const {anchorSegment, otherSegment, anchorSegmentValid} = this.getMergeRequest();
+      const segmentationGroupState = this.layer.displayState.segmentationGroupState.value;
+      const {segmentEquivalences} = segmentationGroupState;
+      if (!anchorSegmentValid) {
+        resetTemporaryVisibleSegmentsState(segmentationGroupState);
+        return;
+      } else {
+        segmentationGroupState.useTemporaryVisibleSegments.value = true;
+        const tempVisibleSegments = segmentationGroupState.temporaryVisibleSegments;
+        tempVisibleSegments.clear();
+        tempVisibleSegments.add(segmentEquivalences.get(anchorSegment!));
+        if (otherSegment !== undefined) {
+          tempVisibleSegments.add(segmentEquivalences.get(otherSegment));
+        }
+      }
+    };
+    updateTempView();
+    activateContext.registerDisposer(() => {
+      resetTemporaryVisibleSegmentsState(this.layer.displayState.segmentationGroupState.value);
+    });
+    const updateStatus = () => {
+      const {element} = message;
+      element.classList.add('neuroglancer-merge-segments-status');
+      const header = document.createElement('div');
+      header.classList.add('neuroglancer-status-header');
+      header.textContent = 'Merge segments';
+      removeChildren(element);
+      element.appendChild(header);
+      const {displayState} = this.layer;
+      let {anchorSegment, otherSegment, error} = this.getMergeRequest();
+      const makeWidget = (id: Uint64MapEntry) => {
+        const row = makeSegmentWidget(this.layer.displayState, id);
+        row.classList.add('neuroglancer-segment-list-entry-double-line');
+        return row;
+      };
+      if (anchorSegment !== undefined) {
+        element.appendChild(makeWidget(augmentSegmentId(displayState, anchorSegment)));
+      }
+      if (error !== undefined) {
+        const msg = document.createElement('span');
+        msg.textContent = error;
+        element.appendChild(msg);
+      }
+      if (otherSegment !== undefined) {
+        const msg = document.createElement('span');
+        msg.textContent = ' merge ';
+        element.appendChild(msg);
+        element.appendChild(makeWidget(augmentSegmentId(displayState, otherSegment)));
+      }
+      updateTempView();
+    };
+    updateStatus();
+    activateContext.registerDisposer(
+        bindSegmentListWidth(this.layer.displayState, message.element));
+    const debouncedUpdateStatus =
+        activateContext.registerCancellable(animationFrameDebounce(updateStatus));
+    registerCallbackWhenSegmentationDisplayStateChanged(
+        this.layer.displayState, activateContext, debouncedUpdateStatus);
+    activateContext.registerDisposer(this.layer.anchorSegment.changed.add(debouncedUpdateStatus));
+    activateContext.registerDisposer(this.lastAnchorBaseSegment.changed.add(debouncedUpdateStatus));
+    activateContext.registerDisposer(
+        registerActionListener(window, 'annotate-merge-segments', event => {
+          event.stopPropagation();
+          this.trigger();
+        }, {capture: true}));
+    activateContext.registerDisposer(
+        registerActionListener(window, 'annotate-set-anchor', event => {
+          event.stopPropagation();
+          this.setAnchor();
+        }, {capture: true}));
+  }
+
+  async trigger() {
+    const {graph: {value: graph}} = this.layer.displayState.segmentationGroupState.value;
+    if (graph === undefined) return;
+    const {anchorSegment, otherSegment, error} = this.getMergeRequest();
+    if (anchorSegment === undefined || otherSegment === undefined || error !== undefined) {
+      return;
+    }
+    try {
+      await graph.merge(anchorSegment, otherSegment);
+      StatusMessage.showTemporaryMessage(`Merge performed`);
+    } catch (e) {
+      StatusMessage.showTemporaryMessage(`Merge failed: ${e}`);
+    }
+  }
+
+  setAnchor() {
+    const {segmentSelectionState} = this.layer.displayState;
+    const other = segmentSelectionState.baseValue;
+    if (other === undefined) return;
+    const existingAnchor = this.layer.anchorSegment.value;
+    this.layer.displayState.segmentationGroupState.value.visibleSegments.add(other);
+    if (existingAnchor === undefined || !Uint64.equal(existingAnchor, other)) {
+      this.layer.anchorSegment.value = other.clone();
+      return;
+    }
+  }
+
+  get description() {
+    return 'merge';
+  }
+}
+
+class SplitSegmentsTool extends Tool {
+  layer: SegmentationUserLayer;
+
+  get inputEventMap() {
+    return MERGE_SEGMENTS_INPUT_EVENT_MAP;
+  }
+
+  toJSON() {
+    return ANNOTATE_SPLIT_SEGMENTS_TOOL_ID;
+  }
+
+  private getAnchorSegment(): {anchorSegment: Uint64|undefined, error: string|undefined} {
+    const {displayState} = this.layer;
+    let anchorSegment = this.layer.anchorSegment.value;
+    if (anchorSegment === undefined) {
+      return {anchorSegment: undefined, error: 'Select anchor segment for split'};
+    }
+    const anchorGraphSegment =
+        displayState.segmentationGroupState.value.segmentEquivalences.get(anchorSegment);
+    if (!displayState.segmentationGroupState.value.visibleSegments.has(anchorGraphSegment)) {
+      return {anchorSegment, error: 'Anchor segment must be in visible set'};
+    }
+    return {anchorSegment, error: undefined};
+  }
+
+  private getSplitRequest(): {
+    anchorSegment: Uint64|undefined,
+    otherSegment: Uint64|undefined,
+    anchorSegmentValid: boolean,
+    error: string|undefined
+  } {
+    let {anchorSegment, error} = this.getAnchorSegment();
+    if (anchorSegment === undefined || error !== undefined) {
+      return {anchorSegment, error, otherSegment: undefined, anchorSegmentValid: false};
+    }
+    const {displayState} = this.layer;
+    const otherSegment = displayState.segmentSelectionState.baseValue;
+    if (otherSegment === undefined ||
+        !Uint64.equal(
+            displayState.segmentSelectionState.selectedSegment,
+            displayState.segmentationGroupState.value.segmentEquivalences.get(anchorSegment)) ||
+        Uint64.equal(otherSegment, anchorSegment)) {
+      return {
+        anchorSegment,
+        otherSegment: undefined,
+        anchorSegmentValid: true,
+        error: 'Hover over base segment to seed split'
+      };
+    }
+    return {anchorSegment, otherSegment, anchorSegmentValid: true, error: undefined};
+  }
+
+  activate() {
+    const activateContext = this.activateContext!;
+    const message = activateContext.registerDisposer(new StatusMessage(false));
+    const updateTempView = () => {
+      const {anchorSegment, otherSegment, anchorSegmentValid} = this.getSplitRequest();
+      const segmentationGroupState = this.layer.displayState.segmentationGroupState.value;
+      const {segmentEquivalences} = segmentationGroupState;
+      const {graphConnection} = this.layer;
+      console.log('Split result', this.getSplitRequest());
+      if (!anchorSegmentValid || graphConnection === undefined) {
+        resetTemporaryVisibleSegmentsState(segmentationGroupState);
+        return;
+      } else {
+        segmentationGroupState.useTemporaryVisibleSegments.value = true;
+        if (otherSegment !== undefined) {
+          const splitResult = graphConnection.computeSplit(anchorSegment!, otherSegment);
+          if (splitResult !== undefined) {
+            segmentationGroupState.useTemporarySegmentEquivalences.value = true;
+            const retainedGraphSegment =
+                segmentationGroupState.segmentEquivalences.get(anchorSegment!);
+            const tempEquivalences = segmentationGroupState.temporarySegmentEquivalences;
+            tempEquivalences.clear();
+            for (const segment of splitResult.include) {
+              tempEquivalences.link(segment, retainedGraphSegment);
+            }
+            for (const segment of splitResult.exclude) {
+              tempEquivalences.link(segment, UNKNOWN_NEW_SEGMENT_ID);
+            }
+            const tempVisibleSegments = segmentationGroupState.temporaryVisibleSegments;
+            tempVisibleSegments.clear();
+            tempVisibleSegments.add(retainedGraphSegment);
+            tempVisibleSegments.add(UNKNOWN_NEW_SEGMENT_ID);
+            return;
+          }
+        }
+        segmentationGroupState.useTemporarySegmentEquivalences.value = false;
+        const tempVisibleSegments = segmentationGroupState.temporaryVisibleSegments;
+        tempVisibleSegments.clear();
+        tempVisibleSegments.add(segmentEquivalences.get(anchorSegment!));
+      }
+    };
+    updateTempView();
+    activateContext.registerDisposer(() => {
+      resetTemporaryVisibleSegmentsState(this.layer.displayState.segmentationGroupState.value);
+    });
+    const updateStatus = () => {
+      const {element} = message;
+      element.classList.add('neuroglancer-merge-segments-status');
+      const header = document.createElement('div');
+      header.classList.add('neuroglancer-status-header');
+      header.textContent = 'Split segments';
+      removeChildren(element);
+      element.appendChild(header);
+      const {displayState} = this.layer;
+      let {anchorSegment, otherSegment, error} = this.getSplitRequest();
+      const makeWidget = (id: Uint64MapEntry) => {
+        const row = makeSegmentWidget(this.layer.displayState, id);
+        row.classList.add('neuroglancer-segment-list-entry-double-line');
+        return row;
+      };
+      if (anchorSegment !== undefined) {
+        element.appendChild(makeWidget(augmentSegmentId(displayState, anchorSegment)));
+      }
+      if (error !== undefined) {
+        const msg = document.createElement('span');
+        msg.textContent = error;
+        element.appendChild(msg);
+      }
+      if (otherSegment !== undefined) {
+        const msg = document.createElement('span');
+        msg.textContent = ' split ';
+        element.appendChild(msg);
+        element.appendChild(makeWidget(augmentSegmentId(displayState, otherSegment)));
+      }
+      updateTempView();
+    };
+    updateStatus();
+    activateContext.registerDisposer(
+        bindSegmentListWidth(this.layer.displayState, message.element));
+    const debouncedUpdateStatus =
+        activateContext.registerCancellable(animationFrameDebounce(updateStatus));
+    registerCallbackWhenSegmentationDisplayStateChanged(
+        this.layer.displayState, activateContext, debouncedUpdateStatus);
+    activateContext.registerDisposer(this.layer.anchorSegment.changed.add(debouncedUpdateStatus));
+    activateContext.registerDisposer(
+        registerActionListener(window, 'annotate-merge-segments', event => {
+          event.stopPropagation();
+          this.trigger();
+        }, {capture: true}));
+    activateContext.registerDisposer(
+        registerActionListener(window, 'annotate-set-anchor', event => {
+          event.stopPropagation();
+          this.setAnchor();
+        }, {capture: true}));
+  }
+
+  async trigger() {
+    const {graph: {value: graph}} = this.layer.displayState.segmentationGroupState.value;
+    if (graph === undefined) return;
+    const {anchorSegment, otherSegment, error} = this.getSplitRequest();
+    if (anchorSegment === undefined || otherSegment === undefined || error !== undefined) {
+      return;
+    }
+    try {
+      await graph.split(anchorSegment, otherSegment);
+      StatusMessage.showTemporaryMessage(`Split performed`);
+    } catch (e) {
+      StatusMessage.showTemporaryMessage(`Split failed: ${e}`);
+    }
+  }
+
+  setAnchor() {
+    const {segmentSelectionState} = this.layer.displayState;
+    const other = segmentSelectionState.baseValue;
+    if (other === undefined) return;
+    this.layer.displayState.segmentationGroupState.value.visibleSegments.add(other);
+    const existingAnchor = this.layer.anchorSegment.value;
+    if (existingAnchor === undefined || !Uint64.equal(existingAnchor, other)) {
+      this.layer.anchorSegment.value = other.clone();
+      return;
+    }
+  }
+
+  get description() {
+    return `split`;
+  }
+}
+
+registerTool(ANNOTATE_MERGE_SEGMENTS_TOOL_ID, layer => {
+  if (!(layer instanceof SegmentationUserLayer)) return undefined;
+  return new MergeSegmentsTool(layer);
+});
+
+registerTool(ANNOTATE_SPLIT_SEGMENTS_TOOL_ID, layer => {
+  if (!(layer instanceof SegmentationUserLayer)) return undefined;
+  return new SplitSegmentsTool(layer);
+});
+
 const keyMap = EventActionMap.fromObject({
   'enter': {action: 'toggle-listed'},
   'shift+enter': {action: 'hide-listed'},
@@ -1063,6 +1494,26 @@ class SegmentDisplayTab extends Tab {
     super();
     const {element} = this;
     element.classList.add('neuroglancer-segment-display-tab');
+    element.appendChild(
+        this.registerDisposer(new DependentViewWidget(
+                                  layer.displayState.segmentationGroupState.value.graph,
+                                  (graph, parent) => {
+                                    if (graph === undefined) return;
+                                    const toolbox = document.createElement('div');
+                                    toolbox.className = 'neuroglancer-segmentation-toolbox';
+                                    toolbox.appendChild(makeToolButton(
+                                        makeLinkSegmentsButton({
+                                          title: 'Merge segments',
+                                        }),
+                                        layer, layer => new MergeSegmentsTool(layer)));
+                                    toolbox.appendChild(makeToolButton(
+                                        makeLinkSegmentsButton({
+                                          title: 'Split segments',
+                                        }),
+                                        layer, layer => new SplitSegmentsTool(layer)));
+                                    parent.appendChild(toolbox);
+                                  }))
+            .element);
     const queryElement = document.createElement('input');
     queryElement.classList.add('neuroglancer-segment-list-query');
     queryElement.addEventListener('focus', () => {
