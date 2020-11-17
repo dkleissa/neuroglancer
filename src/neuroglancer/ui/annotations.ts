@@ -852,8 +852,9 @@ function getSelectedAssociatedSegments(annotationLayer: AnnotationLayerState) {
 }
 
 abstract class PlaceAnnotationTool extends Tool {
-  constructor(public layer: UserLayerWithAnnotations, options: any) {
-    super();
+  layer: UserLayerWithAnnotations;
+  constructor(layer: UserLayerWithAnnotations, options: any) {
+    super(layer);
     options;
   }
 

@@ -29,9 +29,9 @@ import {RenderLayer, RenderLayerRole, VisibilityTrackedRenderLayer} from 'neurog
 import {VolumeType} from 'neuroglancer/sliceview/volume/base';
 import {StatusMessage} from 'neuroglancer/status';
 import {TrackableBoolean} from 'neuroglancer/trackable_boolean';
-import {registerNested, TrackableRefCounted, TrackableValue, TrackableValueInterface, WatchableSet, WatchableValue, WatchableValueInterface} from 'neuroglancer/trackable_value';
+import {registerNested, TrackableValue, TrackableValueInterface, WatchableSet, WatchableValue, WatchableValueInterface} from 'neuroglancer/trackable_value';
 import {LayerDataSourcesTab} from 'neuroglancer/ui/layer_data_sources_tab';
-import {restoreTool, Tool} from 'neuroglancer/ui/tool';
+import {LayerToolBinder, SelectedTool, ToolBinder} from 'neuroglancer/ui/tool';
 import {Borrowed, invokeDisposers, Owned, RefCounted} from 'neuroglancer/util/disposable';
 import {parseArray, parseFixedLengthArray, verifyBoolean, verifyFiniteFloat, verifyInt, verifyObject, verifyObjectProperty, verifyOptionalBoolean, verifyOptionalObjectProperty, verifyOptionalString, verifyPositiveInt, verifyString} from 'neuroglancer/util/json';
 import {MessageList} from 'neuroglancer/util/message_list';
@@ -47,6 +47,7 @@ import {RPC} from 'neuroglancer/worker_rpc';
 
 const TAB_JSON_KEY = 'tab';
 const TOOL_JSON_KEY = 'tool';
+const TOOL_BINDINGS_JSON_KEY = 'toolBindings';
 const LOCAL_POSITION_JSON_KEY = 'localPosition';
 const LOCAL_COORDINATE_SPACE_JSON_KEY = 'localDimensions';
 const SOURCE_JSON_KEY = 'source';
@@ -218,8 +219,8 @@ export class UserLayer extends RefCounted {
   }
 
   tabs = this.registerDisposer(new TabSpecification());
-  tool: TrackableRefCounted<Tool> = this.registerDisposer(
-      new TrackableRefCounted<Tool>(value => restoreTool(this, value), value => value.toJSON()));
+  tool = this.registerDisposer(new SelectedTool(this));
+  toolBinder = new LayerToolBinder(this);
 
   dataSourcesChanged = new NullarySignal();
   dataSources: LayerDataSource[] = [];
@@ -233,6 +234,7 @@ export class UserLayer extends RefCounted {
     this.localCoordinateSpaceCombiner.includeDimensionPredicate = isLocalOrChannelDimension;
     this.tabs.changed.add(this.specificationChanged.dispatch);
     this.tool.changed.add(this.specificationChanged.dispatch);
+    this.toolBinder.changed.add(this.specificationChanged.dispatch);
     this.localPosition.changed.add(this.specificationChanged.dispatch);
     this.pick.changed.add(this.specificationChanged.dispatch);
     this.pick.changed.add(this.layersChanged.dispatch);
@@ -351,6 +353,7 @@ export class UserLayer extends RefCounted {
 
   restoreState(specification: any) {
     this.tool.restoreState(specification[TOOL_JSON_KEY]);
+    this.toolBinder.restoreState(specification[TOOL_BINDINGS_JSON_KEY]);
     this.tabs.restoreState(specification[TAB_JSON_KEY]);
     this.localCoordinateSpace.restoreState(specification[LOCAL_COORDINATE_SPACE_JSON_KEY]);
     this.localPosition.restoreState(specification[LOCAL_POSITION_JSON_KEY]);
@@ -424,6 +427,7 @@ export class UserLayer extends RefCounted {
       [SOURCE_JSON_KEY]: dataSourcesToJson(this.dataSources),
       [TAB_JSON_KEY]: this.tabs.toJSON(),
       [TOOL_JSON_KEY]: this.tool.toJSON(),
+      [TOOL_BINDINGS_JSON_KEY]: this.toolBinder.toJSON(),
       [LOCAL_COORDINATE_SPACE_JSON_KEY]: this.localCoordinateSpace.toJSON(),
       [LOCAL_POSITION_JSON_KEY]: this.localPosition.toJSON(),
       [PICK_JSON_KEY]: this.pick.toJSON(),
@@ -1617,7 +1621,7 @@ export class TopLevelLayerListSpecification extends LayerListSpecification {
       public selectionState: Borrowed<TrackableDataSelectionState>,
       public selectedLayer: Borrowed<SelectedLayerState>,
       public coordinateSpace: WatchableValueInterface<CoordinateSpace>,
-      public globalPosition: Borrowed<Position>) {
+      public globalPosition: Borrowed<Position>, public toolBinder: Borrowed<ToolBinder>) {
     super();
     this.registerDisposer(layerManager.layersChanged.add(this.changed.dispatch));
     this.registerDisposer(layerManager.specificationChanged.add(this.changed.dispatch));

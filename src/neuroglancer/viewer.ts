@@ -41,11 +41,12 @@ import {setupPositionDropHandlers} from 'neuroglancer/ui/position_drag_and_drop'
 import {SelectionDetailsTab} from 'neuroglancer/ui/selection_details';
 import {StateEditorDialog} from 'neuroglancer/ui/state_editor';
 import {StatisticsDisplayState, StatisticsPanel} from 'neuroglancer/ui/statistics';
+import {ToolBinder} from 'neuroglancer/ui/tool';
 import {AutomaticallyFocusedElement} from 'neuroglancer/util/automatic_focus';
 import {TrackableRGB} from 'neuroglancer/util/color';
 import {Borrowed, Owned, RefCounted} from 'neuroglancer/util/disposable';
 import {removeFromParent} from 'neuroglancer/util/dom';
-import {registerActionListener} from 'neuroglancer/util/event_action_map';
+import {ActionEvent, registerActionListener} from 'neuroglancer/util/event_action_map';
 import {vec3} from 'neuroglancer/util/geom';
 import {parseFixedLengthArray, verifyFinitePositiveFloat, verifyObject, verifyOptionalObjectProperty} from 'neuroglancer/util/json';
 import {EventActionMap, KeyboardEventBinder} from 'neuroglancer/util/keyboard_bindings';
@@ -314,6 +315,7 @@ export class Viewer extends RefCounted implements ViewerState {
       this.registerDisposer(new LayerSelectedValues(this.layerManager, this.mouseState));
   selectionDetailsState = this.registerDisposer(
       new TrackableDataSelectionState(this.coordinateSpace, this.layerSelectedValues));
+  toolBinder = this.registerDisposer(new ToolBinder());
 
   resetInitiated = new NullarySignal();
 
@@ -410,7 +412,7 @@ export class Viewer extends RefCounted implements ViewerState {
     this.layerSpecification = new TopLevelLayerListSpecification(
         this.display, this.dataSourceProvider, this.layerManager, this.chunkManager,
         this.selectionDetailsState, this.selectedLayer, this.navigationState.coordinateSpace,
-        this.navigationState.pose.position);
+        this.navigationState.pose.position, this.toolBinder);
 
     this.registerDisposer(display.updateStarted.add(() => {
       this.onUpdateDisplay();
@@ -509,7 +511,7 @@ export class Viewer extends RefCounted implements ViewerState {
     topRow.appendChild(mousePositionWidget.element);
 
     const annotationToolStatus =
-        this.registerDisposer(new AnnotationToolStatusWidget(this.selectedLayer));
+        this.registerDisposer(new AnnotationToolStatusWidget(this.selectedLayer, this.toolBinder));
     topRow.appendChild(annotationToolStatus.element);
     this.registerDisposer(new ElementVisibilityFromTrackableBoolean(
         this.uiControlVisibility.showAnnotationToolStatus, annotationToolStatus.element));
@@ -618,7 +620,7 @@ export class Viewer extends RefCounted implements ViewerState {
     this.registerDisposer(new AutomaticallyFocusedElement(element));
   }
 
-  bindAction(action: string, handler: () => void) {
+  bindAction<Data>(action: string, handler: (event: ActionEvent<Data>) => void) {
     this.registerDisposer(registerActionListener(this.element, action, handler));
   }
 
@@ -626,7 +628,7 @@ export class Viewer extends RefCounted implements ViewerState {
    * Called once by the constructor to register the action listeners.
    */
   private registerActionListeners() {
-    for (const action of ['recolor', 'clear-segments', ]) {
+    for (const action of ['recolor', 'clear-segments', 'toggle-base-segment-coloring']) {
       this.bindAction(action, () => {
         this.layerManager.invokeAction(action);
       });
@@ -669,6 +671,13 @@ export class Viewer extends RefCounted implements ViewerState {
       });
     }
 
+    for (let i = 0; i < 26; ++i) {
+      const uppercase = String.fromCharCode(65 + i);
+      this.bindAction(`tool-${uppercase}`, () => {
+        this.activateTool(uppercase);
+      });
+    }
+
     this.bindAction('annotate', () => {
       const selectedLayer = this.selectedLayer.layer;
       if (selectedLayer === undefined) {
@@ -689,6 +698,20 @@ export class Viewer extends RefCounted implements ViewerState {
     this.bindAction('toggle-default-annotations', () => this.showDefaultAnnotations.toggle());
     this.bindAction('toggle-show-slices', () => this.showPerspectiveSliceViews.toggle());
     this.bindAction('toggle-show-statistics', () => this.showStatistics());
+  }
+
+  activateTool(uppercase: string) {
+    const tool = this.toolBinder.activate(uppercase);
+    if (tool === undefined) return;
+    tool.activate();
+    const {inputEventMap} = tool;
+    if (inputEventMap !== undefined) {
+      const activateContext = tool.activateContext!;
+      activateContext.registerDisposer(
+          this.inputEventBindings.sliceView.addParent(inputEventMap, Number.POSITIVE_INFINITY));
+      activateContext.registerDisposer(this.inputEventBindings.perspectiveView.addParent(
+          inputEventMap, Number.POSITIVE_INFINITY));
+    }
   }
 
   showHelpDialog() {
