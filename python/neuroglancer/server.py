@@ -107,13 +107,14 @@ class Server(object):
 
         app = self.app = tornado.web.Application(
             [
+                (f"^/{prefix}", PingHandler, dict(server=self)),
                 (STATIC_PATH_REGEX.replace("^/v", f"^/{prefix}/v"), StaticPathHandler, dict(server=self)),
                 (INFO_PATH_REGEX.replace("^/neuroglancer", f"^/{prefix}/neuroglancer"), VolumeInfoHandler, dict(server=self)),
                 (SKELETON_INFO_PATH_REGEX.replace("^/neuroglancer", f"^/{prefix}/neuroglancer"), SkeletonInfoHandler, dict(server=self)),
                 (DATA_PATH_REGEX.replace("^/neuroglancer", f"^/{prefix}/neuroglancer"), SubvolumeHandler, dict(server=self)),
                 (SKELETON_PATH_REGEX.replace("^/neuroglancer", f"^/{prefix}/neuroglancer"), SkeletonHandler, dict(server=self)),
                 (MESH_PATH_REGEX.replace("^/neuroglancer", f"^/{prefix}/neuroglancer"), MeshHandler, dict(server=self)),
-                (ACTION_PATH_REGEX.replace("^/action", f"^/{prefix}/action"), ActionHandler, dict(server=self)),
+                (ACTION_PATH_REGEX.replace("^/action", f"^/{prefix}/action"), ActionHandler, dict(server=self))
             ] + sjr_urls,
             log_function=log_function,
             # Set a large maximum message size to accommodate large screenshot
@@ -167,6 +168,12 @@ class StaticPathHandler(BaseRequestHandler):
             return
         self.set_header('Content-type', content_type)
         self.finish(data)
+
+
+class PingHandler(BaseRequestHandler):
+    def get(self):
+        self.set_header('Content-Type', 'text/html')
+        self.finish("<html><head></head><body>alive</body></html>")
 
 class ActionHandler(BaseRequestHandler):
     def post(self, viewer_token):

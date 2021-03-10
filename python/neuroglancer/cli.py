@@ -65,7 +65,8 @@ def handle_server_arguments(args):
         if args.port:
             if args.prefix:
                 server.set_server_bind_address(args.bind_address, int(args.port), args.prefix)
-            server.set_server_bind_address(args.bind_address, int(args.port))
+            else:
+                server.set_server_bind_address(args.bind_address, int(args.port))
         else:
             server.set_server_bind_address(args.bind_address)
     if args.static_content_url:

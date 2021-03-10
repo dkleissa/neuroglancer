@@ -5,6 +5,7 @@ import numpy as np
 
 import neuroglancer
 import neuroglancer.cli
+import time
 
 from example import add_example_layers
 
@@ -23,4 +24,5 @@ if __name__ == '__main__':
         a, b = add_example_layers(s)
 
     print(viewer)
-    print(viewer)
+    while(True):
+        time.sleep(0.1)
