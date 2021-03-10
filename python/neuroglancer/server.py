@@ -41,7 +41,7 @@ from . import local_volume, static
 from . import skeleton
 from .json_utils import json_encoder_default
 from .random_token import make_random_token
-from .sockjs_handler import SOCKET_PATH_REGEX, SOCKET_PATH_REGEX_WITHOUT_GROUP, SockJSHandler
+from neuroglancer.sockjs_handler import SOCKET_PATH_REGEX, SOCKET_PATH_REGEX_WITHOUT_GROUP, SockJSHandler
 
 INFO_PATH_REGEX = r'^/neuroglancer/info/(?P<token>[^/]+)$'
 SKELETON_INFO_PATH_REGEX = r'^/neuroglancer/skeletoninfo/(?P<token>[^/]+)$'
@@ -58,36 +58,63 @@ ACTION_PATH_REGEX = r'^/action/(?P<viewer_token>[^/]+)$'
 
 global_static_content_source = None
 
-global_server_args = dict(bind_address='127.0.0.1', bind_port=0)
+global_server_args = dict(bind_address='127.0.0.1', bind_port=0, prefix="p")
 
 debug = False
 
 class Server(object):
-    def __init__(self, ioloop, bind_address='127.0.0.1', bind_port=0):
+    def __init__(self, ioloop, bind_address='127.0.0.1', bind_port=0, prefix=None):
         self.viewers = weakref.WeakValueDictionary()
         self.token = make_random_token()
         self.executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=multiprocessing.cpu_count())
 
         self.ioloop = ioloop
+
+        # if prefix:
+        #     SOCKET_PATH_REGEX_WITHOUT_GROUP = SOCKET_PATH_REGEX_WITHOUT_GROUP.replace("r'^/", f"r'^/{prefix}/")
+        #     STATIC_PATH_REGEX = STATIC_PATH_REGEX.replace("r'^/", f"r'^/{prefix}/")
+        #     INFO_PATH_REGEX = INFO_PATH_REGEX.replace("r'^/", f"r'^/{prefix}/")
+        #     SKELETON_INFO_PATH_REGEX = SKELETON_INFO_PATH_REGEX.replace("r'^/", f"r'^/{prefix}/")
+        #     DATA_PATH_REGEX = DATA_PATH_REGEX.replace("r'^/", f"r'^/{prefix}/")
+        #     SKELETON_PATH_REGEX = SKELETON_PATH_REGEX.replace("r'^/", f"r'^/{prefix}/")
+        #     MESH_PATH_REGEX = MESH_PATH_REGEX.replace("r'^/", f"r'^/{prefix}/")
+        #     ACTION_PATH_REGEX = ACTION_PATH_REGEX.replace("r'^/", f"r'^/{prefix}/")
+        # else:
+        #
+        #     SOCKET_PATH_REGEX_WITHOUT_GROUP = SOCKET_PATH_REGEX_WITHOUT_GROUP
+        #     STATIC_PATH_REGEX = STATIC_PATH_REGEX
+        #     INFO_PATH_REGEX = INFO_PATH_REGEX
+        #     SKELETON_INFO_PATH_REGEX = SKELETON_INFO_PATH_REGEX
+        #     DATA_PATH_REGEX = DATA_PATH_REGEX
+        #     SKELETON_PATH_REGEX = SKELETON_PATH_REGEX
+        #     MESH_PATH_REGEX = MESH_PATH_REGEX
+        #     ACTION_PATH_REGEX = ACTION_PATH_REGEX
+
         sockjs_router = sockjs.tornado.SockJSRouter(
-            SockJSHandler, SOCKET_PATH_REGEX_WITHOUT_GROUP, io_loop=ioloop)
+            SockJSHandler, SOCKET_PATH_REGEX_WITHOUT_GROUP.replace("r'^/", f"r'^/{prefix}"),
+            io_loop=ioloop)
         sockjs_router.neuroglancer_server = self
         def log_function(handler):
             if debug:
                 print("%d %s %.2fs" % (handler.get_status(),
                                        handler.request.uri, handler.request.request_time()))
 
+        # Rewrite sockjs_router urls
+        sjr_urls = []
+        for u in sockjs_router.urls:
+            sjr_urls.append((u[0].replace("^/socket", f"^/{prefix}/socket"), u[1], u[2]))
+
         app = self.app = tornado.web.Application(
             [
-                (STATIC_PATH_REGEX, StaticPathHandler, dict(server=self)),
-                (INFO_PATH_REGEX, VolumeInfoHandler, dict(server=self)),
-                (SKELETON_INFO_PATH_REGEX, SkeletonInfoHandler, dict(server=self)),
-                (DATA_PATH_REGEX, SubvolumeHandler, dict(server=self)),
-                (SKELETON_PATH_REGEX, SkeletonHandler, dict(server=self)),
-                (MESH_PATH_REGEX, MeshHandler, dict(server=self)),
-                (ACTION_PATH_REGEX, ActionHandler, dict(server=self)),
-            ] + sockjs_router.urls,
+                (STATIC_PATH_REGEX.replace("^/v", f"^/{prefix}/v"), StaticPathHandler, dict(server=self)),
+                (INFO_PATH_REGEX.replace("^/neuroglancer", f"^/{prefix}/neuroglancer"), VolumeInfoHandler, dict(server=self)),
+                (SKELETON_INFO_PATH_REGEX.replace("^/neuroglancer", f"^/{prefix}/neuroglancer"), SkeletonInfoHandler, dict(server=self)),
+                (DATA_PATH_REGEX.replace("^/neuroglancer", f"^/{prefix}/neuroglancer"), SubvolumeHandler, dict(server=self)),
+                (SKELETON_PATH_REGEX.replace("^/neuroglancer", f"^/{prefix}/neuroglancer"), SkeletonHandler, dict(server=self)),
+                (MESH_PATH_REGEX.replace("^/neuroglancer", f"^/{prefix}/neuroglancer"), MeshHandler, dict(server=self)),
+                (ACTION_PATH_REGEX.replace("^/action", f"^/{prefix}/action"), ActionHandler, dict(server=self)),
+            ] + sjr_urls,
             log_function=log_function,
             # Set a large maximum message size to accommodate large screenshot
             # messages.
@@ -110,7 +137,7 @@ class Server(object):
         else:
             hostname = bind_address
 
-        self.server_url = 'http://%s:%s' % (hostname, actual_port)
+        self.server_url = 'http://%s:%s/test' % (hostname, actual_port)
 
     def get_volume(self, key):
         dot_index = key.find('.')
@@ -264,9 +291,9 @@ def set_static_content_source(*args, **kwargs):
     global_static_content_source = static.get_static_content_source(*args, **kwargs)
 
 
-def set_server_bind_address(bind_address='127.0.0.1', bind_port=0):
+def set_server_bind_address(bind_address='127.0.0.1', bind_port=0, prefix='p'):
     global global_server_args
-    global_server_args = dict(bind_address=bind_address, bind_port=bind_port)
+    global_server_args = dict(bind_address=bind_address, bind_port=bind_port, prefix=prefix)
 
 
 def is_server_running():

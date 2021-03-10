@@ -23,3 +23,4 @@ if __name__ == '__main__':
         a, b = add_example_layers(s)
 
     print(viewer)
+    print(viewer)

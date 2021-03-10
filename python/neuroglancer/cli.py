@@ -21,6 +21,10 @@ def add_server_arguments(ap):
         help='Bind address for Python web server.  Use 127.0.0.1 (the default) to restrict access '
         'to browers running on the local machine, use 0.0.0.0 to permit access from remote browsers.'
     )
+    g.add_argument('--port',
+                   help='')
+    g.add_argument('--prefix',
+                   help='')
     g.add_argument('--static-content-url',
                    help='Obtain the Neuroglancer client code from the specified URL.')
     g.add_argument('--debug-server',
@@ -58,7 +62,12 @@ def handle_server_arguments(args):
     from . import server
 
     if args.bind_address:
-        server.set_server_bind_address(args.bind_address)
+        if args.port:
+            if args.prefix:
+                server.set_server_bind_address(args.bind_address, int(args.port), args.prefix)
+            server.set_server_bind_address(args.bind_address, int(args.port))
+        else:
+            server.set_server_bind_address(args.bind_address)
     if args.static_content_url:
         server.set_static_content_source(url=args.static_content_url)
     if args.debug_server:
