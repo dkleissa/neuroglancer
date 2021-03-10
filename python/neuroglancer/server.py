@@ -92,7 +92,8 @@ class Server(object):
         #     ACTION_PATH_REGEX = ACTION_PATH_REGEX
 
         sockjs_router = sockjs.tornado.SockJSRouter(
-            SockJSHandler, SOCKET_PATH_REGEX_WITHOUT_GROUP.replace("r'^/", f"r'^/{prefix}"),
+            SockJSHandler, SOCKET_PATH_REGEX_WITHOUT_GROUP.replace("^/socket",
+                                                                   f"^/{prefix}/socket"),
             io_loop=ioloop)
         sockjs_router.neuroglancer_server = self
         def log_function(handler):
