@@ -71,29 +71,8 @@ class Server(object):
 
         self.ioloop = ioloop
 
-        # if prefix:
-        #     SOCKET_PATH_REGEX_WITHOUT_GROUP = SOCKET_PATH_REGEX_WITHOUT_GROUP.replace("r'^/", f"r'^/{prefix}/")
-        #     STATIC_PATH_REGEX = STATIC_PATH_REGEX.replace("r'^/", f"r'^/{prefix}/")
-        #     INFO_PATH_REGEX = INFO_PATH_REGEX.replace("r'^/", f"r'^/{prefix}/")
-        #     SKELETON_INFO_PATH_REGEX = SKELETON_INFO_PATH_REGEX.replace("r'^/", f"r'^/{prefix}/")
-        #     DATA_PATH_REGEX = DATA_PATH_REGEX.replace("r'^/", f"r'^/{prefix}/")
-        #     SKELETON_PATH_REGEX = SKELETON_PATH_REGEX.replace("r'^/", f"r'^/{prefix}/")
-        #     MESH_PATH_REGEX = MESH_PATH_REGEX.replace("r'^/", f"r'^/{prefix}/")
-        #     ACTION_PATH_REGEX = ACTION_PATH_REGEX.replace("r'^/", f"r'^/{prefix}/")
-        # else:
-        #
-        #     SOCKET_PATH_REGEX_WITHOUT_GROUP = SOCKET_PATH_REGEX_WITHOUT_GROUP
-        #     STATIC_PATH_REGEX = STATIC_PATH_REGEX
-        #     INFO_PATH_REGEX = INFO_PATH_REGEX
-        #     SKELETON_INFO_PATH_REGEX = SKELETON_INFO_PATH_REGEX
-        #     DATA_PATH_REGEX = DATA_PATH_REGEX
-        #     SKELETON_PATH_REGEX = SKELETON_PATH_REGEX
-        #     MESH_PATH_REGEX = MESH_PATH_REGEX
-        #     ACTION_PATH_REGEX = ACTION_PATH_REGEX
-
         sockjs_router = sockjs.tornado.SockJSRouter(
-            SockJSHandler, SOCKET_PATH_REGEX_WITHOUT_GROUP.replace("^/socket",
-                                                                   f"^/{prefix}/socket"),
+            SockJSHandler, SOCKET_PATH_REGEX_WITHOUT_GROUP,
             io_loop=ioloop)
         sockjs_router.neuroglancer_server = self
         def log_function(handler):

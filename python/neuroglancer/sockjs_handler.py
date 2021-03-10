@@ -24,8 +24,15 @@ import sockjs.tornado
 from . import trackable_state, viewer_config_state
 from .json_utils import decode_json, encode_json
 
-SOCKET_PATH_REGEX_WITHOUT_GROUP = r'^/socket/(?:[^/]+)'
-SOCKET_PATH_REGEX = r'^/socket/(?P<viewer_token>[^/]+)'
+import os
+
+if os.environ['APP_PREFIX']:
+    SOCKET_PATH_REGEX_WITHOUT_GROUP = r'^' + os.environ['APP_PREFIX'] + r'/socket/(?:[^/]+)'
+    SOCKET_PATH_REGEX = r'^' + os.environ['APP_PREFIX'] + r'/socket/(?P<viewer_token>[^/]+)'
+else:
+    SOCKET_PATH_REGEX_WITHOUT_GROUP = r'^/socket/(?:[^/]+)'
+    SOCKET_PATH_REGEX = r'^/socket/(?P<viewer_token>[^/]+)'
+    
 
 class ClientCredentialsHandler(object):
     def __init__(self, io_loop, private_state, config_state, credentials_manager):
